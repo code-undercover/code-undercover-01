@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client'
 import { NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
@@ -39,6 +40,15 @@ function validateCodeAgainstSyntaxRules(
     // Minimum code length check — prevents trivially short / empty submissions
     if (rules.minLength && code.trim().length < rules.minLength) {
         failures.push(`Your code must be at least ${rules.minLength} characters long. Keep working!`)
+    }
+
+    // Starter code still sitting in the submission. These are literal comment
+    // strings, not regexes, so a substring test is the correct comparison.
+    for (const pattern of rules.forbiddenPatterns ?? []) {
+        if (pattern && code.includes(pattern)) {
+            failures.push('You have not removed the starter code comments yet. Please delete them before submitting.')
+            break
+        }
     }
 
     return { passed: failures.length === 0, failures }
@@ -120,11 +130,17 @@ export async function POST(req: Request) {
 
         const isFirstTimeCompletion = userMission.status !== 'COMPLETED'
 
-        // Fire-and-forget: increment attempt count (non-blocking)
-        db.userMission.update({
-            where: { id: userMission.id },
-            data: { attemptCount: userMission.attemptCount + 1 }
-        }).catch(e => console.error('[VALIDATE] attemptCount update failed:', e))
+        // Atomic and awaited: the old read-modify-write plus fire-and-forget
+        // could drop increments under concurrency, which both undercounted
+        // attempts and skewed the first-attempt bonus below.
+        try {
+            await db.userMission.update({
+                where: { id: userMission.id },
+                data: { attemptCount: { increment: 1 } },
+            })
+        } catch (e) {
+            console.error('[VALIDATE] attemptCount update failed:', e)
+        }
 
         const rules: ValidationRules = mission.validationRules
             ? JSON.parse(mission.validationRules)
@@ -227,15 +243,6 @@ export async function POST(req: Request) {
         // 3. Success! Calculate Rewards and Combos
         const usedHints = userMission.hintsUsed > 0
 
-        if (isFirstTimeCompletion) {
-            if (usedHints) {
-                newComboStreak = 0 // Combo breaks if a hint was ever used on this mission
-            } else {
-                newComboStreak += 1 // Flawless finish!
-                comboBonusAura = getComboBonus(newComboStreak)
-            }
-        }
-
         let isInnovation = false
         let innovationReason = ""
 
@@ -255,61 +262,98 @@ export async function POST(req: Request) {
             innovationAura: isInnovation ? AURA_FOX_INNOVATION : 0,
         }
 
-        // Compute actual earned rewards gated by isFirstTimeCompletion
-        const computedRewards = {
-            baseAura: isFirstTimeCompletion ? potentialRewards.baseAura : 0,
-            executionAura: isFirstTimeCompletion ? potentialRewards.executionAura : 0,
-            firstAttemptBonus: isFirstTimeCompletion ? potentialRewards.firstAttemptBonus : 0,
-            innovationAura: isFirstTimeCompletion ? potentialRewards.innovationAura : 0,
-            foxBadgeIncrement: isInnovation ? 1 : 0,
-        }
+        // Actual rewards are settled inside the transaction below, once the
+        // completion claim decides whether this really was the first pass.
+        let earnedAura = 0
+        let awardedFoxBadge = false
 
-        let earnedAura =
-            computedRewards.baseAura +
-            computedRewards.executionAura +
-            computedRewards.firstAttemptBonus +
-            computedRewards.innovationAura
+        // 4. Settle rewards in a transaction that owns the completion claim.
+        //
+        // The user row was read before Judge0 ran, so it is seconds stale by now.
+        // Reading it inside this transaction under Serializable isolation is what
+        // makes the absolute write below safe; the claim is what stops two
+        // concurrent submissions both being treated as the first completion.
+        //
+        // Serializable can still abort the loser of a concurrent write on the same
+        // user row (Prisma P2034), which is exactly the double-submit case this
+        // guards. Retrying re-runs the claim, so a retry can only settle it once.
+        let rewardedAsFirstTime = isFirstTimeCompletion
 
-        if (isFirstTimeCompletion) {
-            const hintPenalty = userMission.hintsUsed * AURA_HINT_PENALTY
-            earnedAura = Math.max(10, earnedAura - hintPenalty)
-        } else {
-            earnedAura = 0
-        }
+        for (let attempt = 0; ; attempt++) {
+            try {
+                await db.$transaction(async (tx) => {
+                    const claimed = await tx.userMission.updateMany({
+                        where: { id: userMission.id, status: { not: 'COMPLETED' } },
+                        data: {
+                            status: 'COMPLETED',
+                            completedAt: new Date(),
+                            submittedCode: code,
+                            innovationUnlocked: isInnovation ? true : undefined,
+                        },
+                    })
 
-        // 4. Database Updates in a Transaction
-        await db.$transaction(async (tx) => {
-            if (earnedAura > 0 || isInnovation || isFirstTimeCompletion || newComboStreak !== user.comboStreak) {
-                const newAuraPoints = user.auraPoints + earnedAura
-                const newAuraLevel = calculateAuraLevel(newAuraPoints)
-                const newMaxCombo = Math.max(user.maxCombo, newComboStreak)
+                    rewardedAsFirstTime = claimed.count === 1
 
-                await tx.user.update({
-                    where: { id: user.id },
-                    data: {
-                        auraPoints: newAuraPoints,
-                        auraLevel: newAuraLevel,
-                        comboStreak: newComboStreak,
-                        maxCombo: newMaxCombo,
-                        foxBadges: isInnovation ? { increment: 1 } : undefined,
-                        missionsCompleted: isFirstTimeCompletion ? { increment: 1 } : undefined
+                    const freshUser = await tx.user.findUnique({
+                        where: { id: user.id },
+                        select: { auraPoints: true, comboStreak: true, maxCombo: true },
+                    })
+                    if (!freshUser) return
+
+                    if (rewardedAsFirstTime) {
+                        // A hint used anywhere on this mission breaks the streak.
+                        newComboStreak = usedHints ? 0 : freshUser.comboStreak + 1
+                        comboBonusAura = usedHints ? 0 : getComboBonus(newComboStreak)
+                    } else {
+                        newComboStreak = freshUser.comboStreak
+                        comboBonusAura = 0
                     }
-                })
-            }
 
-            await tx.userMission.update({
-                where: { id: userMission.id },
-                data: {
-                    status: 'COMPLETED',
-                    completedAt: new Date(),
-                    submittedCode: code,
-                    innovationUnlocked: isInnovation ? true : undefined
+                    // The badge is one-shot. detectInnovation ran against the
+                    // pre-transaction row, so the losing request of a double
+                    // submit still thinks it innovated; only the request that won
+                    // the claim may mint the badge.
+                    awardedFoxBadge = rewardedAsFirstTime && isInnovation
+
+                    earnedAura = rewardedAsFirstTime
+                        ? Math.max(
+                            10,
+                            potentialRewards.baseAura +
+                            potentialRewards.executionAura +
+                            potentialRewards.firstAttemptBonus +
+                            potentialRewards.innovationAura +
+                            comboBonusAura -
+                            (userMission.hintsUsed * AURA_HINT_PENALTY)
+                        )
+                        : 0
+
+                    if (earnedAura > 0 || awardedFoxBadge || rewardedAsFirstTime || newComboStreak !== freshUser.comboStreak) {
+                        const newAuraPoints = freshUser.auraPoints + earnedAura
+
+                        await tx.user.update({
+                            where: { id: user.id },
+                            data: {
+                                auraPoints: newAuraPoints,
+                                auraLevel: calculateAuraLevel(newAuraPoints),
+                                comboStreak: newComboStreak,
+                                maxCombo: Math.max(freshUser.maxCombo, newComboStreak),
+                                foxBadges: awardedFoxBadge ? { increment: 1 } : undefined,
+                                missionsCompleted: rewardedAsFirstTime ? { increment: 1 } : undefined,
+                            },
+                        })
+                    }
+                }, { isolationLevel: 'Serializable' })
+                break
+            } catch (err) {
+                if (attempt < 2 && err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2034') {
+                    continue
                 }
-            })
-        })
+                throw err
+            }
+        }
 
         // Calculate potential total would-have-earned aura for UI context
-        const wouldHaveEarnedAura = isFirstTimeCompletion
+        const wouldHaveEarnedAura = rewardedAsFirstTime
             ? undefined
             : Math.max(10,
                 potentialRewards.baseAura +
@@ -326,12 +370,12 @@ export async function POST(req: Request) {
             warnings: compilerWarnings,
             validationErrors: [],
             earnedAura,
-            innovationUnlocked: isInnovation,
-            innovationReason,
+            innovationUnlocked: awardedFoxBadge,
+            innovationReason: awardedFoxBadge ? innovationReason : undefined,
             comboBonus: comboBonusAura,
             comboStreak: newComboStreak,
             executionTimeMs: totalExecutionTimeMs,
-            isReplay: !isFirstTimeCompletion,
+            isReplay: !rewardedAsFirstTime,
             wouldHaveEarnedAura
         })
 
