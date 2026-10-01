@@ -77,15 +77,27 @@ export function validateMissionOutput(
     return { isCorrect: true }
 }
 
+/**
+ * Titles that identify the pointer lesson (Mission 20).
+ *
+ * The canonical-solution comparison below is unreachable unless one of these
+ * matches: the mission's actual title in `missionsData` is "Secure Memory
+ * Allocator", while the older name is kept because fixtures still pass it.
+ */
+const POINTER_MISSION_TITLES = new Set(["Secure Memory Allocator", "The Pointer Breach"])
+
 export function detectInnovation(
     code: string,
     missionTitle: string
 ): { innovationUnlocked: boolean; innovationReason: string } {
     // We specifically target the Pointer mission for these rules
-    if (missionTitle !== "The Pointer Breach") {
-        // Fallback for other missions: check for while-loops or ternary operators
-        const hasWhileLoop = /\bwhile\s*\(/.test(code)
-        const hasTernary = /\?[^:]*:/.test(code)
+    if (!POINTER_MISSION_TITLES.has(missionTitle)) {
+        // A colon inside a printf format ("%d:%s") satisfies /\?[^:]*:/ only when
+        // a '?' precedes it, but string literals are stripped first so ordinary
+        // format strings can never read as an innovation.
+        const source = code.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '""')
+        const hasWhileLoop = /\bwhile\s*\(/.test(source)
+        const hasTernary = /\?[^:]*:/.test(source)
         if (hasWhileLoop || hasTernary) {
             return {
                 innovationUnlocked: true,

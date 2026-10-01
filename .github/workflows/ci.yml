@@ -20,12 +20,19 @@ jobs:
       DIRECT_URL: "postgresql://ci:ci@localhost:5432/ci"
       NEXTAUTH_SECRET: "ci-only-secret-not-used-in-production"
       NEXTAUTH_URL: "http://localhost:3000"
+      # instrumentation.ts runs validateEnv() during the build, and JUDGE0_API_URL
+      # is in its REQUIRED_VARS list. Never contacted in this job.
+      JUDGE0_API_URL: "http://127.0.0.1:2358"
+      # DATABASE_URL is set above so prisma generate has something to read, and
+      # `prebuild` uses its presence to decide whether RLS is verifiable. There
+      # is no Postgres service in this job, so opt out explicitly.
+      SKIP_RLS_CHECK: "1"
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
 
       - name: Install dependencies

@@ -62,6 +62,7 @@ model User {
   accounts      Account[]
   sessions      Session[]
   userMissions  UserMission[]
+  dailyChallenges DailyChallengeCompletion[]
 }
 
 model VerificationToken {
@@ -123,4 +124,22 @@ model DailyQuestion {
   correctAnswer String   // The correct option
   explanation   String   // Explains why it's correct
   createdAt     DateTime @default(now())
+}
+
+/// One row per agent per UTC day. The unique (userId, dateKey) is the
+/// once-per-day guarantee: a duplicate insert is rejected by the database, so
+/// concurrent or repeated POSTs cannot mint aura twice for the same question.
+model DailyChallengeCompletion {
+  id         String   @id @default(uuid())
+  userId     String
+  dateKey    String   // UTC day, "YYYY-MM-DD"
+  questionId String?
+  isCorrect  Boolean  @default(false)
+  earnedAura Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dateKey])
+  @@index([userId])
 }

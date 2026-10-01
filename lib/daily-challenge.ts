@@ -3,6 +3,19 @@ import { dailyQuestions } from "@/src/data/missionsData"
 import type { DailyChallengeQuestion } from "@/components/dashboard/DailyChallenge"
 
 /**
+ * The UTC day a timestamp falls in, as "YYYY-MM-DD".
+ *
+ * This is the key the once-per-day award is recorded against, so every caller
+ * that decides "is this still today's challenge" must derive it the same way.
+ * UTC rather than local time: the question itself already rotates on UTC days
+ * (see getDailyChallengeQuestion), so a local-time key would let the reward
+ * reset hours before the question does.
+ */
+export function utcDayKey(now: Date = new Date()): string {
+    return now.toISOString().slice(0, 10)
+}
+
+/**
  * Resolves today's intercept question. Rotates deterministically by UTC day so
  * every agent sees the same prompt, and falls back to the static question bank
  * when the DB is empty or unreachable.
