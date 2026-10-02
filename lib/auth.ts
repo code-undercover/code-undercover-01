@@ -18,7 +18,7 @@ import GoogleProvider from "next-auth/providers/google"
 import { PrismaAdapter } from "@next-auth/prisma-adapter"
 import { db } from "@/lib/db"
 import { compare } from "bcryptjs"
-import { loginFailedLimiter, getIpFromHeaders } from "./rate-limit"
+import { loginFailedLimiter, loginIpLimiter, getIpFromHeaders } from "./rate-limit"
 
 /**
  * Derive a base username from a name or email, then guarantee uniqueness
@@ -55,7 +55,11 @@ export const authOptions: NextAuthOptions = {
     secret: (() => {
         const secret = process.env.NEXTAUTH_SECRET || process.env.AUTH_SECRET;
         if (secret) return secret;
-        if (process.env.NEXT_PHASE === "phase-production-build") {
+        // Bracket notation on purpose: the bundler inlines direct
+        // `process.env.NEXT_PHASE` accesses at build time, which would bake in
+        // "phase-production-build" and make this return the placeholder secret
+        // in production — a hardcoded, forgeable session-signing key.
+        if (process.env["NEXT_PHASE"] === "phase-production-build") {
             // `next build` imports this module for static analysis but never
             // serves requests, so no real secret is needed at build time.
             return "unused-build-time-placeholder";
@@ -91,6 +95,14 @@ export const authOptions: NextAuthOptions = {
                     return null
                 }
 
+                // Bounds total attempts from one source across all accounts,
+                // which the per-account ip+email bucket above cannot do.
+                const ipRate = await loginIpLimiter.check(ip)
+                if (!ipRate.success) {
+                    console.warn("[AUTH] Login attempt blocked by IP rate limit")
+                    return null
+                }
+
                 try {
                     const user = await db.user.findUnique({
                         where: {
@@ -122,6 +134,8 @@ export const authOptions: NextAuthOptions = {
                     }
                     console.log("[AUTH] User authenticated successfully")
 
+                    await loginFailedLimiter.reset(rateLimitKey)
+
                     return {
                         id: user.id,
                         email: user.email,
@@ -134,13 +148,19 @@ export const authOptions: NextAuthOptions = {
                 }
             },
         }),
-        // Google OAuth — only enabled when credentials are configured
+        // Google OAuth — only enabled when credentials are configured.
+        //
+        // `allowDangerousEmailAccountLinking` is deliberately NOT set. Registration
+        // never verifies the address, so anyone can register any email with a
+        // password. With linking enabled, an attacker who registers
+        // `victim@x.com` first would silently absorb the real user's later Google
+        // sign-in and keep access via the password they set. Without linking,
+        // NextAuth refuses and the user signs in with the password they chose.
         ...(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
             ? [
                 GoogleProvider({
                     clientId: process.env.GOOGLE_CLIENT_ID,
                     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-                    allowDangerousEmailAccountLinking: true,
                 }),
             ]
             : []),
@@ -198,7 +218,7 @@ export const authOptions: NextAuthOptions = {
                 try {
                     const emailStr = token.email as string;
                     const dbUser = await db.user.findUnique({
-                        where: { email: emailStr },
+                        where: { id: token.id as string },
                         select: { username: true, hasSeenIntro: true },
                     });
                     token.username = dbUser?.username || emailStr.split("@")[0];
