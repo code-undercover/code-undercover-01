@@ -3,23 +3,30 @@
 // .js suffix required: next/constants has no ESM subpath export.
 import { PHASE_DEVELOPMENT_SERVER } from "next/constants.js";
 
-const CSP = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net",
-  "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
-  "img-src 'self' data: blob: https:",
-  "font-src 'self' data: https://cdn.jsdelivr.net",
-  "connect-src 'self' https://cdn.jsdelivr.net https://emkc.org",
-  "worker-src 'self' blob:",
-  "object-src 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-  "report-uri /api/security-report",
-].join("; ");
+const buildCsp = (isDev) => {
+  const directives = [
+    "default-src 'self'",
+    // 'unsafe-eval' is a development-only concession: the React 19 dev build
+    // and Turbopack's HMR runtime both eval. Nothing in app/ or components/
+    // calls eval or new Function, and shipping it to production only hands an
+    // injected script a way out of the CSP.
+    `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "worker-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "report-uri /api/security-report",
+  ];
+  return directives.join("; ");
+};
 
-const securityHeaders = [
-  { key: "Content-Security-Policy", value: CSP },
+const securityHeaders = (isDev) => [
+  { key: "Content-Security-Policy", value: buildCsp(isDev) },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
@@ -30,7 +37,6 @@ const securityHeaders = [
   { key: "Cross-Origin-Resource-Policy", value: "same-origin" },
   { key: "X-Permitted-Cross-Domain-Policies", value: "none" },
   { key: "X-Download-Options", value: "noopen" },
-  { key: "X-Permitted-Cross-Domain-Policies", value: "none" },
   { key: "Cache-Control", value: "public, max-age=0, must-revalidate" },
   { key: "Vary", value: "Accept-Encoding" },
 ];
@@ -67,9 +73,14 @@ const nextConfig = (phase) => {
     devIndicators: {
       position: "bottom-right",
     },
-    env: {
-      NEXT_PHASE: phase,
-    },
+    // Do NOT re-export `phase` as NEXT_PHASE here. Entries in `env` are inlined
+    // at build time, so this baked NEXT_PHASE="phase-production-build" into the
+    // standalone server bundle. At runtime every request then looked like it was
+    // still mid-build, and all routes 500'd. It also silently defeated the
+    // build-vs-runtime guards in lib/auth.ts (which would fall back to a
+    // hardcoded signing secret) and lib/compiler.ts. Next.js sets NEXT_PHASE
+    // itself while building; reading process.env.NEXT_PHASE at runtime is the
+    // supported way to detect the phase.
     experimental: {
       optimizePackageImports: ["lucide-react"],
       scrollRestoration: true,
@@ -81,7 +92,7 @@ const nextConfig = (phase) => {
       return [
         {
           source: "/(.*)",
-          headers: securityHeaders,
+          headers: securityHeaders(isDev),
         },
         {
           source: "/api/:path*",
