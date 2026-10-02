@@ -245,6 +245,23 @@ export async function executeCode(
 
     try {
         const apiUrl = process.env.JUDGE0_API_URL || 'http://judge0-server:2358'
+
+        // Bracket notation: the bundler inlines direct `process.env.NEXT_PHASE`
+        // access at build time, which would freeze this guard to `false` and
+        // skip the check in production.
+        if (!process.env.JUDGE0_API_URL && process.env.NODE_ENV === 'production' && process.env["NEXT_PHASE"] !== 'phase-production-build') {
+            // The fallback above is a Docker Compose service name that never resolves on a
+            // real host, so every submission would otherwise stall until DNS gives
+            // up. Failing here logs the actual missing variable instead of an
+            // opaque fetch error, while still returning the same structured
+            // serviceUnavailable result.
+            throw new Error(
+                'JUDGE0_API_URL is required in production. The built-in default ' +
+                '"http://judge0-server:2358" only resolves inside the local ' +
+                'docker-compose network.'
+            )
+        }
+
         const languageId = Number(process.env.JUDGE0_C_LANGUAGE_ID) || DEFAULT_JUDGE0_C_LANGUAGE_ID
 
         const cpuTimeLimitSec = EXECUTION_TIMEOUT_MS / 1000
