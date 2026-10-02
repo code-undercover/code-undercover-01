@@ -1,10 +1,11 @@
-import { 
-    checkUserLimiter, 
-    registerLimiter, 
-    forgotPasswordLimiter, 
-    resetPasswordLimiter, 
-    loginFailedLimiter, 
-    getIpFromHeaders 
+import {
+    registerLimiter,
+    forgotPasswordLimiter,
+    resetPasswordLimiter,
+    loginFailedLimiter,
+    loginIpLimiter,
+    securityReportLimiter,
+    getIpFromHeaders
 } from '../lib/rate-limit'
 
 function assert(condition: boolean, message: string) {
@@ -16,13 +17,13 @@ function assert(condition: boolean, message: string) {
 async function runTests() {
     console.log("=== Running Security & Authentication Hardening Tests ===\n")
 
-    // Test 1: SimpleRateLimiter - API Limiting (Limit: 30)
-    console.log("Test 1: Verifying checkUserLimiter (Limit: 30)...")
+    // Test 1: A request limiter consumes tokens (Limit: 20)
+    console.log("Test 1: Verifying registerLimiter (Limit: 20)...")
     const ip = "192.168.1.1"
-    for (let i = 0; i < 30; i++) {
-        assert((await checkUserLimiter.check(ip)).success === true, `Request ${i + 1} should NOT be rate limited`)
+    for (let i = 0; i < 20; i++) {
+        assert((await registerLimiter.check(ip)).success === true, `Request ${i + 1} should NOT be rate limited`)
     }
-    assert((await checkUserLimiter.isRateLimited(ip)) === true, "Request 31 MUST be rate limited")
+    assert((await registerLimiter.isRateLimited(ip)) === true, "Request 21 MUST be rate limited")
     console.log("✅ API Rate Limiter test passed!")
 
     // Test 2: SimpleRateLimiter - Login Failures Limiting (Limit: 10)
@@ -35,11 +36,41 @@ async function runTests() {
     assert((await loginFailedLimiter.isRateLimited(key)) === true, "Login attempt 11 MUST be blocked")
     console.log("✅ Login Failures Rate Limiter test passed!")
 
+    // Test 2b: Per-IP login cap (Limit: 30)
+    console.log("\nTest 2b: Verifying loginIpLimiter (Limit: 30)...")
+    const stuffingIp = "10.0.0.9"
+    for (let i = 0; i < 30; i++) {
+        assert((await loginIpLimiter.check(stuffingIp)).success === true, `Attempt ${i + 1} should be allowed`)
+    }
+    assert((await loginIpLimiter.check(stuffingIp)).success === false, "Attempt 31 MUST be blocked")
+    console.log("✅ Per-IP login limiter test passed!")
+
+    // Test 2c: reset() clears a tripped failure bucket
+    console.log("\nTest 2c: Verifying loginFailedLimiter.reset()...")
+    const resetKey = "10.0.0.10:victim@example.com"
+    for (let i = 0; i < 10; i++) await loginFailedLimiter.increment(resetKey)
+    assert((await loginFailedLimiter.isRateLimited(resetKey)) === true, "Bucket should be tripped after 10 failures")
+    await loginFailedLimiter.reset(resetKey)
+    assert((await loginFailedLimiter.isRateLimited(resetKey)) === false, "reset() must clear the bucket after a successful sign-in")
+    console.log("✅ reset() test passed!")
+
+    // Test 2d: Unauthenticated CSP sink is throttled
+    console.log("\nTest 2d: Verifying securityReportLimiter (Limit: 30)...")
+    const cspIp = "10.0.0.11"
+    for (let i = 0; i < 30; i++) {
+        assert((await securityReportLimiter.check(cspIp)).success === true, `Report ${i + 1} should be accepted`)
+    }
+    assert((await securityReportLimiter.check(cspIp)).success === false, "Report 31 MUST be blocked")
+    console.log("✅ CSP sink limiter test passed!")
+
     // Test 3: IP Headers Parser
+    // The LAST hop wins, not the first: everything before it is client-supplied
+    // and taking it would let anyone spoof their rate-limit key. This assertion
+    // used to expect "1.2.3.4" and encoded the pre-fix, spoofable behavior.
     console.log("\nTest 3: Verifying getIpFromHeaders parser...")
     const headersMock1 = new Headers()
     headersMock1.set("x-forwarded-for", "1.2.3.4, 5.6.7.8")
-    assert(getIpFromHeaders(headersMock1) === "1.2.3.4", "Should parse first x-forwarded-for IP")
+    assert(getIpFromHeaders(headersMock1) === "5.6.7.8", "Must trust the proxy-appended last hop, not the client-supplied first")
 
     const headersMock2 = { "x-real-ip": "9.10.11.12" }
     assert(getIpFromHeaders(headersMock2) === "9.10.11.12", "Should parse x-real-ip from Record")
