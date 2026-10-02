@@ -11,7 +11,15 @@ export default defineConfig({
     },
     test: {
         setupFiles: ["./vitest.setup.ts"],
-        exclude: ["node_modules", ".next", ".opencode/**", "MyProject"],
+        exclude: [
+            "node_modules",
+            ".next",
+            ".opencode/**",
+            ".kilo/**",
+            ".omo/**",
+            ".playwright-mcp/**",
+            "MyProject",
+        ],
         projects: [
             {
                 extends: true,

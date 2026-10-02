@@ -15,6 +15,7 @@ export interface RateLimiter {
     check(key: string): Promise<RateLimitResult> | RateLimitResult;
     isRateLimited(key: string): Promise<boolean> | boolean;
     increment(key: string): Promise<void> | void;
+    reset(key: string): Promise<void> | void;
     sweep(): void;
 }
 
@@ -90,6 +91,14 @@ public check(key: string): { success: boolean; remaining: number; retryAfterMs: 
     }
 
     /**
+     * Drop the bucket entirely — used to clear a failure count once the caller
+     * proves they are not an attacker (a successful sign-in).
+     */
+    public reset(key: string): void {
+        this.hits.delete(key);
+    }
+
+    /**
      * Sweep expired keys from memory.
      */
     public sweep(): void {
@@ -146,6 +155,10 @@ export class RedisRateLimiter implements RateLimiter {
 
     public async increment(key: string): Promise<void> {
         await this.redis.eval(INCR_WITH_EXPIRE, [this.redisKey(key)], [this.windowMs]);
+    }
+
+    public async reset(key: string): Promise<void> {
+        await this.redis.del(this.redisKey(key));
     }
 
     /** No-op: Redis expires keys natively via PEXPIRE above. */
@@ -212,11 +225,14 @@ export function getIpFromHeaders(headersObj: Headers | Record<string, string | s
     return "127.0.0.1";
 }
 
-export const checkUserLimiter = createLimiter("checkUser", 30, 60000);
 export const registerLimiter = createLimiter("register", 20, 60000);
 export const forgotPasswordLimiter = createLimiter("forgotPassword", 10, 900000);
 export const resetPasswordLimiter = createLimiter("resetPassword", 10, 900000);
 export const loginFailedLimiter = createLimiter("loginFailed", 10, 900000);
+// The per-account failure bucket above is keyed ip+email, so one IP can still
+// walk a list of 10 guesses against every account it knows. This second,
+// IP-only bucket bounds the total attempt rate from a single source.
+export const loginIpLimiter = createLimiter("loginIp", 30, 900000);
 // Compiler/validate proxy to the public Piston API — throttled per-user to
 // prevent one account from hammering a shared third-party service.
 export const compilerRunLimiter = createLimiter("compilerRun", 20, 60000);
@@ -224,18 +240,22 @@ export const missionValidateLimiter = createLimiter("missionValidate", 20, 60000
 export const missionActionLimiter = createLimiter("missionAction", 15, 60000);
 export const dailyChallengeLimiter = createLimiter("dailyChallenge", 10, 60000);
 export const profileLimiter = createLimiter("profile", 20, 60000);
+// Unauthenticated by design (the browser posts CSP reports without cookies),
+// so it needs its own budget or anyone can flood the logs.
+export const securityReportLimiter = createLimiter("securityReport", 30, 60000);
 
 if (typeof setInterval !== "undefined") {
     setInterval(() => {
-        checkUserLimiter.sweep();
         registerLimiter.sweep();
         forgotPasswordLimiter.sweep();
         resetPasswordLimiter.sweep();
         loginFailedLimiter.sweep();
+        loginIpLimiter.sweep();
         compilerRunLimiter.sweep();
         missionValidateLimiter.sweep();
         missionActionLimiter.sweep();
         dailyChallengeLimiter.sweep();
         profileLimiter.sweep();
+        securityReportLimiter.sweep();
     }, 5 * 60000);
 }

@@ -7,17 +7,10 @@ const REQUIRED_VARS = [
   "JUDGE0_API_URL",
 ] as const
 
-/**
- * Without Upstash, lib/rate-limit.ts and lib/cache.ts throw at import time in
- * production, so these are genuinely required rather than optional there.
- *
- * Supabase is deliberately absent: only app/auth/callback/route.ts reads it, via
- * the anon/publishable key, and it already degrades to a login error instead of
- * crashing. The "secret" key is never read by this codebase.
- */
 const REQUIRED_IN_PRODUCTION = [
-  "UPSTASH_REDIS_REST_URL",
-  "UPSTASH_REDIS_REST_TOKEN",
+  // Password reset is the only mail this app sends. Requiring the key here beats
+  // letting a reset silently no-op in production, where the symptom is a user
+  // who never receives the email and has no way to tell it was sent.
   "RESEND_API_KEY",
 ] as const
 

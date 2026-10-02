@@ -15,7 +15,7 @@ const eslintConfig = [
         // CLI doesn't, so build/generated output gets linted otherwise.
         // scripts/ is excluded to match tsconfig.json — standalone dev/
         // diagnostic scripts, not part of the shipped app.
-        ignores: [".next/**", "node_modules/**", "out/**", "build/**", "next-env.d.ts", "scripts/**"],
+        ignores: [".next/**", "node_modules/**", "out/**", "build/**", "next-env.d.ts", "scripts/**", ".kilo/**", ".omo/**", ".playwright-mcp/**"],
     },
     ...compat.extends("next/core-web-vitals", "next/typescript"),
     {
