@@ -63,11 +63,22 @@ const nextConfig = (phase) => {
     poweredByHeader: false,
     reactStrictMode: true,
     images: {
+      // Exact hostnames only, never a wildcard. Google's OAuth `picture` claim
+      // (the only remote value User.image ever holds, via the stock Google
+      // provider in lib/auth.ts) is served from the numbered lh* hosts, so
+      // allow those four and nothing else. A wildcard here would let the
+      // image optimizer fetch and re-encode ARBITRARY user-uploaded content:
+      // *.googleusercontent.com serves Google Photos and Drive share links,
+      // and *.githubusercontent.com covers raw.githubusercontent.com, where
+      // anyone can host a file. That is a server-side request forgery and a
+      // remote code execution surface, and it is why no pattern below has a
+      // `*`. Note also that a redirect from an allowed host is followed
+      // WITHOUT re-checking remotePatterns, so the list must stay exact.
       remotePatterns: [
         { protocol: "https", hostname: "lh3.googleusercontent.com" },
-        { protocol: "https", hostname: "*.googleusercontent.com" },
-        { protocol: "https", hostname: "avatars.githubusercontent.com" },
-        { protocol: "https", hostname: "*.githubusercontent.com" },
+        { protocol: "https", hostname: "lh4.googleusercontent.com" },
+        { protocol: "https", hostname: "lh5.googleusercontent.com" },
+        { protocol: "https", hostname: "lh6.googleusercontent.com" },
       ],
     },
     devIndicators: {
