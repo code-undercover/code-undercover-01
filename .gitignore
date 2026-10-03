@@ -74,4 +74,9 @@ generate_error.txt
 .react-doctor-output.json
 
 # AI agents
-.agents/
+.agents/
+
+# Kilo / agent workspace artifacts
+.omo/
+.playwright-mcp/
+thoughts/
