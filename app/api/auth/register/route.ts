@@ -78,39 +78,29 @@ export async function POST(req: Request) {
             )
         }
 
-        const hashedPassword = await hash(password, 12)
-        let newUser
-
+        // Any existing row is a conflict, including a Google account with no
+        // password. Registration never verifies the address, so setting a
+        // password on that row let anyone who knew a Google user's email take
+        // the account over. A Google user who wants a password uses Forgot
+        // Password, which proves they own the mailbox.
         if (existingUser) {
-            if (existingUser.password) {
-                return NextResponse.json(
-                    { error: "User with this email already exists", message: "User with this email already exists" },
-                    { status: 409 }
-                )
-            }
-
-            newUser = await db.user.update({
-                where: { id: existingUser.id },
-                data: {
-                    password: hashedPassword,
-                    name: name || existingUser.name || email.split("@")[0],
-                    username,
-                    preferredLanguage,
-                },
-            })
-            console.log("[REGISTER] Password initialized for existing user")
-        } else {
-            newUser = await db.user.create({
-                data: {
-                    email,
-                    password: hashedPassword,
-                    name: name || email.split("@")[0],
-                    username,
-                    preferredLanguage,
-                },
-            })
-            console.log("[REGISTER] New user created")
+            return NextResponse.json(
+                { error: "User with this email already exists", message: "User with this email already exists" },
+                { status: 409 }
+            )
         }
+
+        const hashedPassword = await hash(password, 12)
+        const newUser = await db.user.create({
+            data: {
+                email,
+                password: hashedPassword,
+                name: name || email.split("@")[0],
+                username,
+                preferredLanguage,
+            },
+        })
+        console.log("[REGISTER] New user created")
 
         console.log("[REGISTER] User created successfully")
 
