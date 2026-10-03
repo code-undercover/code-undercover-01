@@ -2,11 +2,20 @@ import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { requireSessionUser } from '@/lib/session'
 import { canAccessMission } from '@/services/mission.service'
+import { missionActionLimiter } from '@/lib/rate-limit'
 
 export async function POST(req: Request) {
     try {
         const { userId, error } = await requireSessionUser()
         if (error) return error
+
+        const rate = await missionActionLimiter.check(userId)
+        if (!rate.success) {
+            return NextResponse.json(
+                { error: `Too many requests. Try again in ${Math.ceil(rate.retryAfterMs / 1000)}s.` },
+                { status: 429 }
+            )
+        }
 
         const { missionId, phase } = await req.json()
         if (!missionId || typeof missionId !== 'string' || !phase) {

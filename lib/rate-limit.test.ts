@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from "vitest"
+import { readdirSync, readFileSync, statSync } from "node:fs"
+import { join } from "node:path"
 import { SimpleRateLimiter, getIpFromHeaders } from "./rate-limit"
 
 describe("SimpleRateLimiter.check", () => {
@@ -51,6 +53,19 @@ describe("SimpleRateLimiter.isRateLimited / increment", () => {
     })
 })
 
+describe("SimpleRateLimiter.reset", () => {
+    it("clears a tripped bucket so the caller gets a fresh budget", () => {
+        const limiter = new SimpleRateLimiter(1, 60000)
+        limiter.increment("a")
+        expect(limiter.isRateLimited("a")).toBe(true)
+
+        limiter.reset("a")
+
+        expect(limiter.isRateLimited("a")).toBe(false)
+        expect(limiter.check("a").success).toBe(true)
+    })
+})
+
 describe("SimpleRateLimiter.sweep", () => {
     it("removes only expired buckets", () => {
         vi.useFakeTimers()
@@ -100,5 +115,50 @@ describe("getIpFromHeaders", () => {
 
     it("handles array-valued headers from a plain record, trusting only the last hop", () => {
         expect(getIpFromHeaders({ "x-forwarded-for": ["10.0.0.2", "10.0.0.3"] })).toBe("10.0.0.3")
+    })
+})
+
+describe("rate limiter call sites", () => {
+    const routeFiles = (function collect(dir: string): string[] {
+        return readdirSync(dir).flatMap((entry) => {
+            const full = join(dir, entry)
+            if (statSync(full).isDirectory()) return collect(full)
+            return entry === "route.ts" ? [full] : []
+        })
+    })(join(process.cwd(), "app", "api"))
+
+    it("finds the API routes to check", () => {
+        expect(routeFiles.length).toBeGreaterThan(5)
+    })
+
+    it("never gates a route on isRateLimited() without incrementing", () => {
+        // isRateLimited() only peeks, so a route that guards on it and never
+        // increments stays permanently under its limit. Three auth routes
+        // shipped exactly that bug.
+        const offenders = routeFiles.filter((file) => {
+            const src = readFileSync(file, "utf8")
+            const peeked = src.match(/(\w+)\.isRateLimited\(/g) ?? []
+            return peeked.some((call) => {
+                const limiter = call.split(".")[0]
+                return !src.includes(`${limiter}.increment(`)
+            })
+        })
+
+        expect(offenders.map((f) => f.replace(process.cwd(), "."))).toEqual([])
+    })
+
+    it("throttles every mutating route", () => {
+        // A write route with no limiter is an unbounded endpoint. /ping is the
+        // one deliberate exception: it is a read-only liveness probe.
+        const exempt = new Set(["app/api/ping/route.ts"])
+        const unthrottled = routeFiles.filter((file) => {
+            const rel = file.replace(process.cwd() + "\\", "").replace(process.cwd() + "/", "")
+            if (exempt.has(rel)) return false
+            const src = readFileSync(file, "utf8")
+            const mutates = /export async function (POST|PUT|PATCH|DELETE)\b/.test(src)
+            return mutates && !/Limiter\.check\(/.test(src)
+        })
+
+        expect(unthrottled.map((f) => f.replace(process.cwd(), "."))).toEqual([])
     })
 })

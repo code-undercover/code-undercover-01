@@ -11,7 +11,7 @@ const FROM_ADDRESS = process.env.EMAIL_FROM || "Code Undercover Agency <onboardi
 export async function sendPasswordResetEmail(to: string, resetUrl: string) {
     if (!resend) {
         console.warn("[EMAIL] RESEND_API_KEY missing. Cannot send reset link.")
-        console.log(`[EMAIL] Reset URL would be: ${resetUrl}`)
+        console.error(`[EMAIL] Password reset for ${to} could NOT be delivered — no mail transport configured.`)
         return false
     }
 

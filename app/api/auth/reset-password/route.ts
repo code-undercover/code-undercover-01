@@ -8,7 +8,8 @@ import { validatePassword } from "@/lib/passwordPolicy"
 export async function POST(req: Request) {
     try {
         const ip = getIpFromHeaders(req.headers)
-        if (await resetPasswordLimiter.isRateLimited(ip)) {
+        const rate = await resetPasswordLimiter.check(ip)
+        if (!rate.success) {
             return NextResponse.json(
                 { message: "Too many requests. Please try again later." },
                 { status: 429 }
@@ -53,8 +54,9 @@ export async function POST(req: Request) {
             )
         }
 
-        // Hash new password
-        const hashedPassword = await bcrypt.hash(password, 10)
+        // Must match registration's cost factor; a weaker one here quietly
+        // downgrades every password set through the mailbox-takeover path.
+        const hashedPassword = await bcrypt.hash(password, 12)
 
         // Update the user's password and clear the reset token
         await db.user.update({
@@ -66,10 +68,20 @@ export async function POST(req: Request) {
             }
         })
 
-        return NextResponse.json(
+        // Sessions are JWTs valid for 30 days, so without this every cookie
+        // issued before the reset keeps working — the exact outcome a victim
+        // resets to end. The PrismaAdapter does not do this for us under a JWT
+        // strategy, so the rows must be deleted explicitly.
+        await db.session.deleteMany({ where: { userId: user.id } })
+
+        const response = NextResponse.json(
             { message: "Password has been successfully reset" },
             { status: 200 }
         )
+        const expired = "path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
+        response.headers.append("Set-Cookie", `next-auth.session-token=; ${expired}`)
+        response.headers.append("Set-Cookie", `__Secure-next-auth.session-token=; ${expired}; Secure`)
+        return response
     } catch (error) {
         console.error("[RESET_PASSWORD] Error:", error)
         return NextResponse.json(

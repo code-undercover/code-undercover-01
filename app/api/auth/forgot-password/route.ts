@@ -7,7 +7,8 @@ import { forgotPasswordLimiter, getIpFromHeaders } from "@/lib/rate-limit"
 export async function POST(req: Request) {
     try {
         const ip = getIpFromHeaders(req.headers)
-        if (await forgotPasswordLimiter.isRateLimited(ip)) {
+        const rate = await forgotPasswordLimiter.check(ip)
+        if (!rate.success) {
             return NextResponse.json(
                 { message: "Too many requests. Please try again later." },
                 { status: 429 }
@@ -35,15 +36,33 @@ export async function POST(req: Request) {
 
         const normalizedEmail = email.trim().toLowerCase()
 
+        // Both branches must cost roughly the same wall-clock time. Padding only
+        // the "no such user" branch (as this used to) left the two clearly
+        // distinguishable: an unknown address returned in a flat 500ms while a
+        // known one took however long the DB write plus the Resend round trip
+        // took, which is enough to enumerate accounts one request at a time.
+        // Everything now exits through respond(), which pads to a common floor.
+        const startedAt = Date.now()
+        const MIN_RESPONSE_MS = 500
+
+        const respond = async () => {
+            const elapsed = Date.now() - startedAt
+            if (elapsed < MIN_RESPONSE_MS) {
+                await new Promise(resolve => setTimeout(resolve, MIN_RESPONSE_MS - elapsed))
+            }
+            return NextResponse.json(
+                { message: "If the email exists, a reset link was sent." },
+                { status: 200 }
+            )
+        }
+
         const user = await db.user.findUnique({
             where: { email: normalizedEmail },
         })
 
         // Always return success even if user doesn't exist (prevents email enumeration)
         if (!user) {
-            // Simulate processing time
-            await new Promise(resolve => setTimeout(resolve, 500))
-            return NextResponse.json({ message: "If the email exists, a reset link was sent." }, { status: 200 })
+            return await respond()
         }
 
         // Generate random token
@@ -68,14 +87,10 @@ export async function POST(req: Request) {
         const emailSent = await sendPasswordResetEmail(normalizedEmail, resetUrl)
 
         if (!emailSent) {
-            console.error("[FORGOT_PASSWORD] Failed to send email via Nodemailer.")
-            // Don't fail the request entirely, but log it
+            console.error("[FORGOT_PASSWORD] Failed to send email via Resend.")
         }
 
-        return NextResponse.json(
-            { message: "If the email exists, a reset link was sent." },
-            { status: 200 }
-        )
+        return await respond()
     } catch (error) {
         console.error("[FORGOT_PASSWORD] Error:", error)
         return NextResponse.json(

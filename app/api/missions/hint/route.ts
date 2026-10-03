@@ -46,18 +46,23 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: 'Mission not found' }, { status: 404 })
         }
 
-        if (userMission.hintsUsed >= 5) {
+        const claimed = await db.userMission.updateMany({
+            where: { id: userMission.id, hintsUsed: { lt: 5 } },
+            data: { hintsUsed: { increment: 1 } },
+        })
+
+        if (claimed.count === 0) {
             return NextResponse.json({ error: 'Maximum hints reached' }, { status: 429 })
         }
 
-        const updated = await db.userMission.update({
+        const updated = await db.userMission.findUnique({
             where: { id: userMission.id },
-            data: { hintsUsed: userMission.hintsUsed + 1 }
+            select: { hintsUsed: true },
         })
 
-        const hintAssigned = HINTS[updated.hintsUsed - 1]
+        const hintAssigned = HINTS[(updated?.hintsUsed ?? 1) - 1]
 
-        return NextResponse.json({ success: true, hintsUsed: updated.hintsUsed, hint: hintAssigned })
+        return NextResponse.json({ success: true, hintsUsed: updated?.hintsUsed, hint: hintAssigned })
     } catch (error) {
         console.error('Hint request error:', error)
         return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

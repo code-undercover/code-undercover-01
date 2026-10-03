@@ -27,9 +27,10 @@ export async function GET(req: Request) {
         const limit = Math.min(100, Math.max(1, Number(searchParams.get("limit")) || 20))
         const skip = (page - 1) * limit
 
-        const [totalMissions, dbUsers] = await safeDbQuery(
+        const [totalMissions, totalPlayers, dbUsers] = await safeDbQuery(
             () => Promise.all([
                 db.mission.count(),
+                db.user.count(),
                 db.user.findMany({
                     select: {
                         id: true,
@@ -41,10 +42,16 @@ export async function GET(req: Request) {
                         missionsCompleted: true,
                         image: true,
                     },
-                    orderBy: { auraPoints: "desc" },
+                    // id breaks ties so paging is stable: without a total order, rows sharing an
+// auraPoints value can land on either side of a page boundary at random.
+orderBy: [{ auraPoints: "desc" }, { id: "asc" }],
+                    // Paged in the query rather than sliced in JS: reading the
+                    // whole table to render 20 rows made this O(users) per page.
+                    skip,
+                    take: limit,
                 }),
             ]),
-            [0, []] as [number, Array<{
+            [0, 0, []] as [number, number, Array<{
                 id: string
                 name: string | null
                 username: string | null
@@ -73,11 +80,11 @@ export async function GET(req: Request) {
         }))
 
         return NextResponse.json({
-            players: players.slice(skip, skip + limit),
+            players,
             currentUserId: session.user.id,
             page,
-            totalPages: Math.max(1, Math.ceil(players.length / limit)),
-            totalPlayers: players.length,
+            totalPages: Math.max(1, Math.ceil(totalPlayers / limit)),
+            totalPlayers,
         })
     } catch (error) {
         console.error("[API] Leaderboard error:", error)
