@@ -1,5 +1,5 @@
 import { db } from "@/lib/db"
-import { dailyQuestions } from "@/src/data/missionsData"
+import { dailyQuestions } from "@/src/data/dailyQuestions.server"
 import type { DailyChallengeQuestion } from "@/components/dashboard/DailyChallenge"
 
 /**
@@ -16,53 +16,32 @@ export function utcDayKey(now: Date = new Date()): string {
 }
 
 /**
- * Resolves today's intercept question. Rotates deterministically by UTC day so
- * every agent sees the same prompt, and falls back to the static question bank
- * when the DB is empty or unreachable.
+ * Resolves today's intercept question.
+ *
+ * The static bank is the single source of truth for *which* question a given day
+ * shows; the DailyQuestion table may only override that id's wording. Grading is
+ * keyed on the returned id, so the selection order must not depend on whether
+ * the table is seeded and reachable. Deriving the index from the static bank
+ * alone also keeps a newly seeded question from reshuffling future days.
  */
 export async function getDailyChallengeQuestion(): Promise<DailyChallengeQuestion | null> {
+    if (dailyQuestions.length === 0) return null
+
     const now = Date.now()
-    let question: DailyChallengeQuestion | null = null
+    let question: DailyChallengeQuestion = dailyQuestions[Math.floor(now / 86400000) % dailyQuestions.length]
 
     try {
-        const count = await db.dailyQuestion.count()
-        if (count > 0) {
-            const index = Math.floor(now / 86400000) % count
-            const dailyQuestion = await db.dailyQuestion.findFirst({
-                skip: index,
-                orderBy: { id: "asc" },
-                select: { id: true, question: true, options: true },
-            })
+        // A missing or malformed row falls back to the static copy.
+        const dbQuestion = await db.dailyQuestion.findUnique({ where: { id: question.id } })
 
-            if (dailyQuestion) {
-                let options: unknown = []
-                try {
-                    options = JSON.parse(dailyQuestion.options)
-                } catch (error) {
-                    console.error("Failed to parse daily question options:", error)
-                }
-
-                if (Array.isArray(options) && options.every((opt) => typeof opt === "string")) {
-                    question = {
-                        id: dailyQuestion.id,
-                        question: dailyQuestion.question,
-                        options,
-                    }
-                }
+        if (dbQuestion) {
+            const options: unknown = JSON.parse(dbQuestion.options)
+            if (Array.isArray(options) && options.every((opt) => typeof opt === "string")) {
+                question = { id: dbQuestion.id, question: dbQuestion.question, options }
             }
         }
     } catch (error) {
-        console.error("Failed to fetch daily question from DB:", error)
-    }
-
-    if (!question && dailyQuestions.length > 0) {
-        const index = Math.floor(now / 86400000) % dailyQuestions.length
-        const fallbackQ = dailyQuestions[index]
-        question = {
-            id: fallbackQ.id,
-            question: fallbackQ.question,
-            options: fallbackQ.options,
-        }
+        console.error("Failed to load daily question override from DB:", error)
     }
 
     return question

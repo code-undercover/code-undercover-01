@@ -4,7 +4,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { db } from '@/lib/db'
 import { executeCode } from '@/lib/compiler'
-import { detectInnovation, validateMissionOutput } from '@/lib/validation/missionValidator'
+import { detectInnovation, getGradingCases, gradeMissionRuns } from '@/lib/validation/missionValidator'
 import { canAccessMission } from '@/services/mission.service'
 import { staleSessionResponse } from '@/lib/session'
 import { missionValidateLimiter } from '@/lib/rate-limit'
@@ -117,6 +117,14 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: 'Mission not found' }, { status: 404 })
         }
 
+        // Checked before any write: a mission with no grading key used to pass
+        // every compiling submission, and must not touch the agent's streak.
+        const gradingCases = getGradingCases(mission.order, input)
+        if (!gradingCases) {
+            console.error(`[VALIDATE] Mission ${mission.order} has no grading key`)
+            return NextResponse.json({ error: 'This mission cannot be graded right now.' }, { status: 500 })
+        }
+
         const userMission = await db.userMission.upsert({
             where: { userId_missionId: { userId: user.id, missionId } },
             update: {},
@@ -173,24 +181,26 @@ export async function POST(req: Request) {
         const totalExecutionTimeMs = runRes.executionTimeMs || 0
         const finalStdout = runRes.output || ""
 
+        // A judge outage is not the agent's fault. Report it as its own state
+        // and leave the combo streak alone — breaking a streak over an
+        // infrastructure failure punishes the wrong person.
+        const judgeUnavailable = (explanation?: string) => NextResponse.json({
+            success: false,
+            serviceUnavailable: true,
+            stdout: "",
+            stderr: "",
+            validationErrors: [],
+            explanation,
+            comboBonus: 0,
+            comboStreak: user.comboStreak
+        })
+
         if (!runRes.success) {
             // Compilation error, runtime crash, or compiler service issue
             const errorDetail = runRes.compilerError || runRes.errors || "Execution failed"
 
-            // A judge outage is not the agent's fault. Report it as its own
-            // state and leave the combo streak alone — breaking a streak over
-            // an infrastructure failure punishes the wrong person.
             if (runRes.serviceUnavailable) {
-                return NextResponse.json({
-                    success: false,
-                    serviceUnavailable: true,
-                    stdout: "",
-                    stderr: "",
-                    validationErrors: [],
-                    explanation: runRes.errors,
-                    comboBonus: 0,
-                    comboStreak: user.comboStreak
-                })
+                return judgeUnavailable(runRes.errors)
             }
 
             if (isFirstTimeCompletion) {
@@ -218,8 +228,17 @@ export async function POST(req: Request) {
         // never learned it had e.g. an uninitialised variable.
         const compilerWarnings = (runRes.diagnostics ?? []).filter(d => d.type !== 'error')
 
-        // 3. Strict Output Validation against secure backend data
-        const validationResult = validateMissionOutput(mission.order, input, finalStdout)
+        // 3. Strict Output Validation against secure backend data. The run
+        // above only produced what the agent sees; grading reruns every
+        // authored case. executeCode caches by (code, input), so a case
+        // matching the agent's own input costs no second judge call.
+        const caseRuns = await Promise.all(gradingCases.map((c) => executeCode(code, c.input)))
+        const unavailableRun = caseRuns.find((r) => r.serviceUnavailable)
+        if (unavailableRun) {
+            return judgeUnavailable(unavailableRun.errors)
+        }
+
+        const validationResult = gradeMissionRuns(gradingCases, caseRuns)
 
         if (!validationResult.isCorrect) {
             // Combo breaks on incorrect output

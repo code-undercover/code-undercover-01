@@ -1,4 +1,4 @@
-import { secureMissionValidations } from "@/src/data/missionsData"
+import { secureMissionValidations } from "@/src/data/secureMissionValidations.server"
 
 export interface ValidationResult {
     missionCleared: boolean;
@@ -24,9 +24,57 @@ function normalizeOutput(str: string): string {
         .replace(/[.!?]+$/, "")        // strip trailing punctuation (., !, ?)
 }
 
+export interface GradingCase {
+    input: string;
+    expectedOutput: string;
+    /**
+     * Whether a failure may quote the expected output back. Only a
+     * requiredOutput mission's answer is already spelled out in its briefing;
+     * echoing a test case's answer hands the agent a lookup table to hardcode.
+     */
+    revealExpected: boolean;
+}
+
+/** The parts of a compiler run that grading reads. */
+export interface GradedRun {
+    success: boolean;
+    output?: string;
+    errors?: string;
+}
+
+/**
+ * The runs a submission must pass, or null when the mission has no grading key
+ * (callers must treat that as a failure, never a pass).
+ *
+ * A test-case mission is graded on every authored input, never on stdin the
+ * agent chose. Grading only the agent's own input let a hardcoded printf pass:
+ * any input that matched no case fell back to the first case's answer, and the
+ * failure message quoted that answer back. A requiredOutput mission takes no
+ * input, so it is graded on the agent's own run.
+ */
+export function getGradingCases(missionOrder: number, userInput: string): GradingCase[] | null {
+    const secureConfig = secureMissionValidations[missionOrder]
+    if (!secureConfig) return null
+
+    if (secureConfig.requiredOutput) {
+        return [{ input: userInput, expectedOutput: secureConfig.requiredOutput, revealExpected: true }]
+    }
+
+    if (secureConfig.testCases && secureConfig.testCases.length > 0) {
+        return secureConfig.testCases.map((tc) => ({
+            input: tc.input,
+            expectedOutput: tc.expectedOutput,
+            revealExpected: false,
+        }))
+    }
+
+    return null
+}
+
 /**
  * Normalized output validation comparing compiler-produced stdout against
  * expected outputs pulled directly from our secure backend data source.
+ * `runs[i]` must be the result of running the submission on `cases[i].input`.
  *
  * Normalization is intentionally beginner-friendly:
  *   - Case-insensitive (lowercase both sides)
@@ -36,41 +84,31 @@ function normalizeOutput(str: string): string {
  * Critically, validation still depends entirely on the real stdout produced by
  * the Local GCC compiler. Source code is never parsed for pass/fail logic.
  */
-export function validateMissionOutput(
-    missionOrder: number,
-    userInput: string,
-    compilerOutput: string
-): OutputValidationResult {
-    const secureConfig = secureMissionValidations[missionOrder]
-    if (!secureConfig) {
-        // Fallback for safety: if no validation config exists, let it pass compile checks
-        return { isCorrect: true }
+export function gradeMissionRuns(cases: GradingCase[], runs: GradedRun[]): OutputValidationResult {
+    if (cases.length === 0 || runs.length !== cases.length) {
+        return { isCorrect: false, feedbackMessage: "This mission could not be graded. Please try again." }
     }
 
-    let expectedOutput = ""
-    const rawUserOutput = compilerOutput.trim()
+    for (let i = 0; i < cases.length; i++) {
+        const { input, expectedOutput, revealExpected } = cases[i]
+        const run = runs[i]
+        const shownInput = input.trim().replace(/\n/g, " / ")
 
-    if (secureConfig.requiredOutput) {
-        expectedOutput = secureConfig.requiredOutput
-    } else if (secureConfig.testCases && secureConfig.testCases.length > 0) {
-        const cleanInput = userInput.trim()
-        // Find test case matching the execution input
-        const matchedTestCase = secureConfig.testCases.find(
-            (tc) => tc.input.trim() === cleanInput
-        )
-
-        if (matchedTestCase) {
-            expectedOutput = matchedTestCase.expectedOutput
-        } else {
-            // Default to first test case if input doesn't match exactly
-            expectedOutput = secureConfig.testCases[0].expectedOutput
+        if (!run.success) {
+            return {
+                isCorrect: false,
+                feedbackMessage: `Platypus: Your program failed when HQ ran it on input '${shownInput}': ${run.errors || "execution failed"}. Make sure it handles every input, not just the one you tried.`,
+            }
         }
-    }
 
-    if (normalizeOutput(rawUserOutput) !== normalizeOutput(expectedOutput)) {
+        const rawUserOutput = (run.output ?? "").trim()
+        if (normalizeOutput(rawUserOutput) === normalizeOutput(expectedOutput)) continue
+
         return {
             isCorrect: false,
-            feedbackMessage: `Platypus: Not quite, Agent. We intercepted your transmission, but the payload was incorrect. Your output: '${rawUserOutput}'. Expected meaning: '${expectedOutput}'. Check what you are passing into your printf function.`,
+            feedbackMessage: revealExpected
+                ? `Platypus: Not quite, Agent. We intercepted your transmission, but the payload was incorrect. Your output: '${rawUserOutput}'. Expected meaning: '${expectedOutput}'. Check what you are passing into your printf function.`
+                : `Platypus: Not quite, Agent. HQ ran your program on input '${shownInput}' and intercepted '${rawUserOutput}', which is not the payload we expect. Make sure it works for every input, not just the one you tried.`,
         }
     }
 

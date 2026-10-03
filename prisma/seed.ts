@@ -1,7 +1,8 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 export { }
 const { PrismaClient } = require("@prisma/client")
-import { missions as missionData, missionDetails as descriptions, dailyQuestions } from "../src/data/missionsData"
+import { missions as missionData, missionDetails as descriptions } from "../src/data/missionsData"
+import { dailyQuestions } from "../src/data/dailyQuestions.server"
 
 const prisma = new PrismaClient()
 

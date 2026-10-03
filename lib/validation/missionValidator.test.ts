@@ -1,42 +1,79 @@
 import { describe, it, expect } from "vitest"
-import { validateMissionOutput, detectInnovation } from "./missionValidator"
+import { getGradingCases, gradeMissionRuns, detectInnovation } from "./missionValidator"
 
-describe("validateMissionOutput", () => {
+// Grades `outputs[i]` as the stdout of a successful run on case i.
+function grade(missionOrder: number, userInput: string, outputs: string[]) {
+    const cases = getGradingCases(missionOrder, userInput) ?? []
+    return gradeMissionRuns(cases, outputs.map((output) => ({ success: true, output })))
+}
+
+describe("getGradingCases", () => {
+    it("grades a requiredOutput mission on the agent's own input", () => {
+        expect(getGradingCases(1, "x")).toEqual([
+            { input: "x", expectedOutput: "Hello Agent", revealExpected: true },
+        ])
+    })
+
+    it("grades a test-case mission on every authored input, ignoring the agent's", () => {
+        const cases = getGradingCases(2, "999")
+        expect(cases?.map((c) => c.input)).toEqual(["7", "42"])
+        expect(cases?.every((c) => !c.revealExpected)).toBe(true)
+    })
+
+    it("returns null when the mission has no grading key", () => {
+        expect(getGradingCases(99999, "")).toBeNull()
+    })
+})
+
+describe("gradeMissionRuns", () => {
     // Mission 1 ("The System Access"): requiredOutput = "Hello Agent"
     it("accepts an exact match against requiredOutput", () => {
-        expect(validateMissionOutput(1, "", "Hello Agent").isCorrect).toBe(true)
+        expect(grade(1, "", ["Hello Agent"]).isCorrect).toBe(true)
     })
 
     it("is case-insensitive and whitespace-tolerant", () => {
-        expect(validateMissionOutput(1, "", "  hello    agent  ").isCorrect).toBe(true)
+        expect(grade(1, "", ["  hello    agent  "]).isCorrect).toBe(true)
     })
 
     it("tolerates trailing punctuation", () => {
-        expect(validateMissionOutput(1, "", "Hello Agent!").isCorrect).toBe(true)
+        expect(grade(1, "", ["Hello Agent!"]).isCorrect).toBe(true)
     })
 
     it("rejects wrong output and includes a feedback message", () => {
-        const result = validateMissionOutput(1, "", "Wrong output")
+        const result = grade(1, "", ["Wrong output"])
         expect(result.isCorrect).toBe(false)
-        expect(result.feedbackMessage).toBeTruthy()
+        expect(result.feedbackMessage).toContain("Hello Agent")
     })
 
-    // Mission 2 ("Variable Infiltration"): testCases keyed by input
-    it("matches the test case whose input equals the execution input", () => {
-        expect(validateMissionOutput(2, "7", "You entered: 7").isCorrect).toBe(true)
-        expect(validateMissionOutput(2, "42", "You entered: 42").isCorrect).toBe(true)
+    // Mission 2 ("Variable Infiltration"): testCases 7 and 42
+    it("accepts when every test case's output matches", () => {
+        expect(grade(2, "", ["You entered: 7", "You entered: 42"]).isCorrect).toBe(true)
     })
 
-    it("rejects output that doesn't match the matched test case", () => {
-        expect(validateMissionOutput(2, "7", "You entered: 42").isCorrect).toBe(false)
+    it("rejects a hardcoded printf that only matches one case", () => {
+        expect(grade(2, "7", ["You entered: 7", "You entered: 7"]).isCorrect).toBe(false)
     })
 
-    it("falls back to the first test case when input matches none", () => {
-        expect(validateMissionOutput(2, "999", "You entered: 7").isCorrect).toBe(true)
+    it("never quotes a test case's expected output back", () => {
+        const result = grade(2, "", ["You entered: 7", "nope"])
+        expect(result.isCorrect).toBe(false)
+        expect(result.feedbackMessage).toContain("'42'")
+        expect(result.feedbackMessage).not.toContain("You entered: 42")
     })
 
-    it("passes by default when no validation config exists for the mission", () => {
-        expect(validateMissionOutput(99999, "", "anything").isCorrect).toBe(true)
+    it("rejects a run that failed on a hidden case", () => {
+        const cases = getGradingCases(2, "")!
+        const result = gradeMissionRuns(cases, [
+            { success: true, output: "You entered: 7" },
+            { success: false, errors: "Time limit exceeded" },
+        ])
+        expect(result.isCorrect).toBe(false)
+        expect(result.feedbackMessage).toContain("Time limit exceeded")
+    })
+
+    it("fails closed when there is nothing to grade against", () => {
+        expect(gradeMissionRuns([], []).isCorrect).toBe(false)
+        expect(grade(99999, "", ["anything"]).isCorrect).toBe(false)
     })
 })
 

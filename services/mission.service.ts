@@ -1,5 +1,6 @@
 import { db } from "@/lib/db"
-import { missions as missionData, missionDetails, dailyQuestions } from "@/src/data/missionsData"
+import { missions as missionData, missionDetails } from "@/src/data/missionsData"
+import { dailyQuestions } from "@/src/data/dailyQuestions.server"
 import type { DashboardMission, MissionStatus } from "@/types"
 
 // ─── Auto-seed guard ───

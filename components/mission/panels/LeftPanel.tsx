@@ -1,5 +1,5 @@
 import { MissionRecord } from "@/types"
-import { missionDetails } from "@/src/data/missionsData"
+import { missionDetails } from "@/src/data/missionDetails"
 import { cn } from "@/lib/utils"
 
 interface LeftPanelProps {
