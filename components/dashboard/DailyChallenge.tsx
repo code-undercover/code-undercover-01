@@ -58,6 +58,7 @@ export function DailyChallenge({ initialQuestion }: DailyChallengeProps) {
     const [selectedOption, setSelectedOption] = useState<string | null>(null)
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [result, setResult] = useState<{ isCorrect: boolean; explanation: string; earnedAura: number; correctAnswer: string } | null>(null)
+    const [submitError, setSubmitError] = useState<string | null>(null)
 
     if (!initialQuestion || !Array.isArray(initialQuestion.options) || initialQuestion.options.length === 0) return null
 
@@ -74,6 +75,7 @@ export function DailyChallenge({ initialQuestion }: DailyChallengeProps) {
         if (!selectedOption || !questionData) return
 
         setIsSubmitting(true)
+        setSubmitError(null)
         try {
             const res = await fetch("/api/daily-challenge", {
                 method: "POST",
@@ -85,7 +87,11 @@ export function DailyChallenge({ initialQuestion }: DailyChallengeProps) {
             })
 
             if (!res.ok) {
-                console.error("Daily challenge API request failed with status:", res.status)
+                const body = await res.json().catch(() => null)
+                setSubmitError(
+                    body?.error ??
+                    `Submission failed (${res.status}). Reopen the challenge and try again.`
+                )
                 setIsSubmitting(false)
                 return
             }
@@ -120,6 +126,7 @@ export function DailyChallenge({ initialQuestion }: DailyChallengeProps) {
             }
         } catch (e) {
             console.error("Failed to submit answer", e)
+            setSubmitError("Network error. Check your connection and try again.")
         } finally {
             setIsSubmitting(false)
         }
@@ -144,6 +151,15 @@ export function DailyChallenge({ initialQuestion }: DailyChallengeProps) {
         <div className="bg-[#131C2E] border border-slate-700/60 rounded-3xl p-6 md:p-8 relative overflow-hidden shadow-[0_20px_50px_rgba(0,0,0,0.4)] transition-all">
             <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,#10b98110,transparent_70%)] pointer-events-none"></div>
             
+            {submitError && (
+                <div
+                    role="alert"
+                    className="relative z-10 mb-4 rounded-xl border border-red-500/40 bg-red-950/40 px-4 py-3 text-xs text-red-300"
+                >
+                    {submitError}
+                </div>
+            )}
+
             {/* Header */}
             <div className="flex items-center justify-between gap-3 mb-6 border-b border-slate-800/80 pb-4 relative z-10 select-none flex-wrap">
                 <div className="flex items-center gap-2 flex-wrap">

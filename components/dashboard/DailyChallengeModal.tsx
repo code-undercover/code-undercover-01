@@ -30,6 +30,7 @@ export function DailyChallengeModal({ initialQuestion }: DailyChallengeModalProp
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [result, setResult] = useState<{ isCorrect: boolean; explanation: string; earnedAura: number; correctAnswer: string } | null>(null)
     const [shakeKey, setShakeKey] = useState(0)
+    const [submitError, setSubmitError] = useState<string | null>(null)
 
     useEffect(() => {
         if (!initialQuestion) return
@@ -52,6 +53,7 @@ export function DailyChallengeModal({ initialQuestion }: DailyChallengeModalProp
         const handleTrigger = () => {
             setSelectedOption(null)
             setResult(null)
+            setSubmitError(null)
             setIsOpen(true)
         }
 
@@ -83,6 +85,7 @@ export function DailyChallengeModal({ initialQuestion }: DailyChallengeModalProp
         if (!selectedOption || !initialQuestion) return
 
         setIsSubmitting(true)
+        setSubmitError(null)
         try {
             const res = await fetch("/api/daily-challenge", {
                 method: "POST",
@@ -94,7 +97,11 @@ export function DailyChallengeModal({ initialQuestion }: DailyChallengeModalProp
             })
             
             if (!res.ok) {
-                console.error("Daily challenge API request failed with status:", res.status)
+                const body = await res.json().catch(() => null)
+                setSubmitError(
+                    body?.error ??
+                    `Submission failed (${res.status}). Reopen the challenge and try again.`
+                )
                 setIsSubmitting(false)
                 return
             }
@@ -134,6 +141,7 @@ export function DailyChallengeModal({ initialQuestion }: DailyChallengeModalProp
             }
         } catch (e) {
             console.error("Failed to submit daily challenge answer", e)
+            setSubmitError("Network error. Check your connection and try again.")
         } finally {
             setIsSubmitting(false)
         }
@@ -278,6 +286,15 @@ export function DailyChallengeModal({ initialQuestion }: DailyChallengeModalProp
                                         )
                                     })}
                                 </motion.div>
+
+                                {submitError && (
+                                    <div
+                                        role="alert"
+                                        className="relative z-10 rounded-xl border border-red-500/40 bg-red-950/40 px-4 py-3 text-xs text-red-300"
+                                    >
+                                        {submitError}
+                                    </div>
+                                )}
 
                                 {/* Dynamic explanation debrief response */}
                                 {result && (

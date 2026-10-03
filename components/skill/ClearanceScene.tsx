@@ -209,10 +209,14 @@ export function ClearanceScene({ progress }: ClearanceSceneProps) {
                         const isSelected = !locked && selectedId === card.id
                         const isFlying = flyingId === card.id
                         const isRattling = rattlingId === card.id
+                        const activate = () =>
+                            locked ? rattle(card.id) : setSelectedId(card.id)
 
                         return (
                             <article
                                 key={card.id}
+                                role="button"
+                                tabIndex={0}
                                 ref={(el) => { cardRefs.current[card.id] = el }}
                                 className={[
                                     styles.card,
@@ -224,7 +228,13 @@ export function ClearanceScene({ progress }: ClearanceSceneProps) {
                                     isTransitioning && !isFlying ? styles.isFading : "",
                                 ].filter(Boolean).join(" ")}
                                 style={{ "--i": i } as CSSProperties}
-                                onClick={() => (locked ? rattle(card.id) : setSelectedId(card.id))}
+                                onClick={activate}
+                                onKeyDown={(e) => {
+                                    if (e.key === "Enter" || e.key === " ") {
+                                        e.preventDefault()
+                                        activate()
+                                    }
+                                }}
                             >
                                 <span className={`${styles.pin} ${styles.pinLeft}`} aria-hidden="true" />
                                 <span className={`${styles.pin} ${styles.pinRight}`} aria-hidden="true" />

@@ -51,6 +51,7 @@ export function DailyTasksClient({ initialQuestion, user }: DailyTasksClientProp
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [quizResult, setQuizResult] = useState<{ isCorrect: boolean; explanation: string; earnedAura: number; correctAnswer: string } | null>(null)
     const [shakeKey, setShakeKey] = useState(0)
+    const [submitError, setSubmitError] = useState<string | null>(null)
 
     // Flashcard State
     const [cards] = useState<Flashcard[]>(flashcardsData)
@@ -108,6 +109,7 @@ export function DailyTasksClient({ initialQuestion, user }: DailyTasksClientProp
         if (!selectedOption || !initialQuestion) return
 
         setIsSubmitting(true)
+        setSubmitError(null)
         try {
             const res = await fetch("/api/daily-challenge", {
                 method: "POST",
@@ -147,9 +149,16 @@ export function DailyTasksClient({ initialQuestion, user }: DailyTasksClientProp
                     window.dispatchEvent(new Event(DAILY_COMPLETION_EVENT))
                     setQuizCompleted(true)
                 }
+            } else {
+                const body = await res.json().catch(() => null)
+                setSubmitError(
+                    body?.error ??
+                    `Submission failed (${res.status}). Reopen the quiz and try again.`
+                )
             }
         } catch (e) {
             console.error("Quiz submission failed", e)
+            setSubmitError("Network error. Check your connection and try again.")
         } finally {
             setIsSubmitting(false)
         }
@@ -341,6 +350,15 @@ export function DailyTasksClient({ initialQuestion, user }: DailyTasksClientProp
                                             )
                                         })}
                                     </div>
+
+                                    {submitError && (
+                                        <div
+                                            role="alert"
+                                            className="rounded-xl border border-red-500/40 bg-red-950/40 px-4 py-3 text-xs text-red-300"
+                                        >
+                                            {submitError}
+                                        </div>
+                                    )}
 
                                     {/* Explanation Box - layout animates height via FLIP, not per-frame layout */}
                                     <AnimatePresence>
